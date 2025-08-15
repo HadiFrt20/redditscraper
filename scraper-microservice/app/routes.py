@@ -16,7 +16,7 @@ def health():
 
 @scrape_bp.get("/")
 def home():
-    return "Hello there"
+    return f"status: {MANAGER.status}\n message: {MANAGER.message}"
 
 @scrape_bp.post("/scrape")
 def start_scrape():
