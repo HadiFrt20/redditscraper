@@ -10,13 +10,16 @@ DEFAULT_SUBREDDIT = "nbadiscussion"
 
 scrape_bp = Blueprint("scrape", __name__)
 
+
 @scrape_bp.get("/health")
 def health():
     return jsonify({"status": "ok"})
 
+
 @scrape_bp.get("/")
 def home():
     return f"status: {MANAGER.status}\n message: {MANAGER.message}"
+
 
 @scrape_bp.post("/scrape")
 def start_scrape():
@@ -38,7 +41,7 @@ def start_scrape():
     try:
         MANAGER.start(
             players=players,
-            subreddits=subs,                          # <— CHANGED
+            subreddits=subs,  # <— CHANGED
             search_limit=data.get("search_limit", None),
             time_filter=data.get("time_filter", "all"),
             sort=data.get("sort", "new"),
@@ -53,17 +56,25 @@ def start_scrape():
 @scrape_bp.get("/scrape/progress")
 def scrape_progress():
     with MANAGER.lock:
-        pct = (MANAGER.completed_units / MANAGER.total_units * 100.0) if MANAGER.total_units else 0.0
-        return jsonify({
-            "status": MANAGER.status,
-            "message": MANAGER.message,
-            "total_units": MANAGER.total_units,
-            "completed_units": MANAGER.completed_units,
-            "percent": round(pct, 2),
-            "current_player_index": MANAGER.current_player_index,
-        })
+        pct = (
+            (MANAGER.completed_units / MANAGER.total_units * 100.0)
+            if MANAGER.total_units
+            else 0.0
+        )
+        return jsonify(
+            {
+                "status": MANAGER.status,
+                "message": MANAGER.message,
+                "total_units": MANAGER.total_units,
+                "completed_units": MANAGER.completed_units,
+                "percent": round(pct, 2),
+                "current_player_index": MANAGER.current_player_index,
+            }
+        )
+
 
 # ---------- GCS-backed results ----------
+
 
 @scrape_bp.get("/scrape/results")
 def list_results():
@@ -79,21 +90,26 @@ def list_results():
 
     files = []
     for player, slug in info.get("slugs", {}).items():
-        files.append({
-            "player": player,
-            "slug": slug,
-            "final_blob": f"{job_prefix}{slug}.csv",
-            "parts": info.get("parts", {}).get(slug, 0),
-        })
+        files.append(
+            {
+                "player": player,
+                "slug": slug,
+                "final_blob": f"{job_prefix}{slug}.csv",
+                "parts": info.get("parts", {}).get(slug, 0),
+            }
+        )
 
-    return jsonify({
-        "status": info.get("status"),
-        "message": info.get("message"),
-        "job_id": info.get("job_id"),
-        "job_prefix": job_prefix,
-        "chunk_rows": info.get("chunk_rows"),
-        "files": files,
-    })
+    return jsonify(
+        {
+            "status": info.get("status"),
+            "message": info.get("message"),
+            "job_id": info.get("job_id"),
+            "job_prefix": job_prefix,
+            "chunk_rows": info.get("chunk_rows"),
+            "files": files,
+        }
+    )
+
 
 @scrape_bp.get("/scrape/results/<slug>.csv")
 def download_player_csv(slug: str):
@@ -112,7 +128,10 @@ def download_player_csv(slug: str):
     # Stream from GCS (for very large files, consider the signed-URL endpoint below)
     client = storage.Client()
     # Use the same bucket name your manager uses (it stores it in its config)
-    from .config import GCP_BUCKET  # import here to avoid circular imports at module load
+    from .config import (
+        GCP_BUCKET,
+    )  # import here to avoid circular imports at module load
+
     bucket = client.bucket(GCP_BUCKET)
     blob = bucket.blob(final_blob_name)
     if not blob.exists():
@@ -126,6 +145,7 @@ def download_player_csv(slug: str):
         download_name=f"{slug}.csv",
     )
 
+
 # Optional: return a time-limited signed URL instead of streaming through Flask
 @scrape_bp.get("/scrape/results/<slug>.url")
 def signed_url_for_player_csv(slug: str):
@@ -138,6 +158,7 @@ def signed_url_for_player_csv(slug: str):
 
     client = storage.Client()
     from .config import GCP_BUCKET
+
     bucket = client.bucket(GCP_BUCKET)
     blob = bucket.blob(final_blob_name)
     if not blob.exists():
@@ -146,16 +167,23 @@ def signed_url_for_player_csv(slug: str):
     url = blob.generate_signed_url(version="v4", expiration=3600, method="GET")
     return jsonify({"url": url})
 
+
 # --- controls: pause / resume / cancel ---
+
 
 @scrape_bp.post("/scrape/pause")
 def scrape_pause():
     try:
         MANAGER.pause()
-        return jsonify({
-            "status": "paused",
-            "message": "Job paused",
-        }), 200
+        return (
+            jsonify(
+                {
+                    "status": "paused",
+                    "message": "Job paused",
+                }
+            ),
+            200,
+        )
     except Exception as e:
         # e.g., "Job is not running."
         return jsonify({"error": str(e)}), 400
@@ -165,10 +193,15 @@ def scrape_pause():
 def scrape_resume():
     try:
         MANAGER.resume()
-        return jsonify({
-            "status": "running",
-            "message": "Job resumed",
-        }), 200
+        return (
+            jsonify(
+                {
+                    "status": "running",
+                    "message": "Job resumed",
+                }
+            ),
+            200,
+        )
     except Exception as e:
         # e.g., "Job is not paused."
         return jsonify({"error": str(e)}), 400
@@ -179,10 +212,15 @@ def scrape_cancel():
     try:
         MANAGER.cancel()
         # Manager sets status to "cancelling" immediately; background loop exits on next check
-        return jsonify({
-            "status": "cancelling",
-            "message": "Cancellation requested",
-        }), 200
+        return (
+            jsonify(
+                {
+                    "status": "cancelling",
+                    "message": "Cancellation requested",
+                }
+            ),
+            200,
+        )
     except Exception as e:
         # e.g., "No running job to cancel."
         return jsonify({"error": str(e)}), 400

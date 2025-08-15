@@ -1,8 +1,4 @@
 # tests/conftest.py
-import io
-import json
-from pathlib import Path
-
 import pytest
 
 # Import your package and factory
@@ -16,6 +12,7 @@ import app.scraper as scraper_mod
 # --------------------------
 class InMemoryGCS:
     """Very small in-memory blob store to stub GCS behavior."""
+
     def __init__(self):
         self.store = {}
 
@@ -60,7 +57,9 @@ def fake_gcs(monkeypatch):
     # Some routes may import `signed_url` as `gcs_signed_url`
     # If present, patch it too (don't fail if not there).
     try:
-        monkeypatch.setattr(app_pkg.routes, "gcs_signed_url", gcs.signed_url, raising=False)
+        monkeypatch.setattr(
+            app_pkg.routes, "gcs_signed_url", gcs.signed_url, raising=False
+        )
     except Exception:
         pass
 
@@ -73,7 +72,9 @@ def players_csv(tmp_path, monkeypatch):
     Create a temp players CSV and point routes to it so POST /scrape with no players uses this file.
     """
     path = tmp_path / "players.csv"
-    path.write_text("LeBron James\nNikola Jokic\nGiannis Antetokounmpo\n", encoding="utf-8")
+    path.write_text(
+        "LeBron James\nNikola Jokic\nGiannis Antetokounmpo\n", encoding="utf-8"
+    )
 
     # routes has a module-level constant PLAYERS_CSV_PATH
     monkeypatch.setattr(app_pkg.routes, "PLAYERS_CSV_PATH", str(path), raising=False)
@@ -95,7 +96,10 @@ def fake_scraper(monkeypatch):
     that writes one row per (player, subreddit) and finishes quickly.
     This runs under asyncio.run() inside the manager worker thread.
     """
-    async def _fake_scrape(players, subreddits, search_limit, time_filter, sort, state_proxy):
+
+    async def _fake_scrape(
+        players, subreddits, search_limit, time_filter, sort, state_proxy
+    ):
         total = len(players) * len(subreddits)
         state_proxy.set_total(total)
 
@@ -127,7 +131,6 @@ def fake_scraper(monkeypatch):
         state_proxy.mark_finished()
 
     monkeypatch.setattr(scraper_mod, "scrape_players_async", _fake_scrape, raising=True)
-
 
 
 @pytest.fixture()

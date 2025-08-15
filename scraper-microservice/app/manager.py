@@ -1,21 +1,40 @@
 # app/manager.py
-import csv, io, json, time, threading, asyncio
+import csv
+import io
+import json
+import time
+import threading
+import asyncio
 from typing import List, Dict, Any, Optional
 
 from .config import GCP_BUCKET, RESULTS_PREFIX, CHUNK_ROWS
 from .utils import slugify
-from .gcs_io import bucket as gcs_bucket, upload_text, exists as gcs_exists, compose_many
+from .gcs_io import (
+    bucket as gcs_bucket,
+    upload_text,
+    exists as gcs_exists,
+    compose_many,
+)
 
 # CSV schema (one row per submission)
 CSV_FIELDS = [
     "subreddit",
-    "submission_id", "title", "submission_url", "submission_text",
-    "score", "upvote_ratio", "num_comments", "created_utc",
-    "search_player", "comments_json",
+    "submission_id",
+    "title",
+    "submission_url",
+    "submission_text",
+    "score",
+    "upvote_ratio",
+    "num_comments",
+    "created_utc",
+    "search_player",
+    "comments_json",
 ]
+
 
 def _now_job_id() -> str:
     return time.strftime("job-%Y-%m-%dT%H-%M-%S")
+
 
 class ScrapeManager:
     def __init__(self):
@@ -42,13 +61,13 @@ class ScrapeManager:
 
         # GCS context
         self.bkt = gcs_bucket(GCP_BUCKET)
-        self.job_id: Optional[str] = None                  # e.g. job-2025-08-14T12-34-56
-        self.job_prefix: Optional[str] = None              # e.g. scrapes/job-.../
-        self.slug_map: Dict[str, str] = {}                 # player -> slug
+        self.job_id: Optional[str] = None  # e.g. job-2025-08-14T12-34-56
+        self.job_prefix: Optional[str] = None  # e.g. scrapes/job-.../
+        self.slug_map: Dict[str, str] = {}  # player -> slug
 
         # per-player streaming buffers & part counts
-        self.buffers: Dict[str, List[Dict[str, Any]]] = {} # slug -> rows pending
-        self.part_counts: Dict[str, int] = {}              # slug -> parts written
+        self.buffers: Dict[str, List[Dict[str, Any]]] = {}  # slug -> rows pending
+        self.part_counts: Dict[str, int] = {}  # slug -> parts written
 
     # ---------- lifecycle ----------
     def start(
@@ -72,7 +91,7 @@ class ScrapeManager:
             # normalize subreddit list (dedupe, keep order)
             seen = set()
             self.subreddits = []
-            for s in (subreddits or ["nbadiscussion"]):
+            for s in subreddits or ["nbadiscussion"]:
                 if s not in seen:
                     self.subreddits.append(s)
                     seen.add(s)
@@ -102,7 +121,8 @@ class ScrapeManager:
                 slug = base
                 i = 2
                 while slug in used:
-                    slug = f"{base}-{i}"; i += 1
+                    slug = f"{base}-{i}"
+                    i += 1
                 used.add(slug)
                 self.slug_map[p] = slug
                 self.buffers[slug] = []
@@ -116,7 +136,9 @@ class ScrapeManager:
                     upload_text(self.bkt, header_blob, header_line)
 
             # start background worker
-            self.thread = threading.Thread(target=self._worker, name="scraper-worker", daemon=True)
+            self.thread = threading.Thread(
+                target=self._worker, name="scraper-worker", daemon=True
+            )
             self.thread.start()
 
     def is_running(self) -> bool:
@@ -186,10 +208,14 @@ class ScrapeManager:
         sources = [f"{self.job_prefix}{slug}/header.csv"]
         n = self.part_counts.get(slug, 0)
         if n > 0:
-            sources += [f"{self.job_prefix}{slug}/part-{i:05d}.csv" for i in range(1, n + 1)]
+            sources += [
+                f"{self.job_prefix}{slug}/part-{i:05d}.csv" for i in range(1, n + 1)
+            ]
 
         # compose (use positional args to avoid param-name mismatches)
-        compose_many(self.bkt, sources, final_blob, f"{self.job_prefix}{slug}/_compose_tmp")
+        compose_many(
+            self.bkt, sources, final_blob, f"{self.job_prefix}{slug}/_compose_tmp"
+        )
         return final_blob
 
     def increment_progress(self):
@@ -213,7 +239,7 @@ class ScrapeManager:
                     self.message = "Cancelled"
                     self.touch()
                     return True
-                paused = (self.status == "paused")
+                paused = self.status == "paused"
             if not paused:
                 return False
             time.sleep(0.2)
@@ -221,6 +247,7 @@ class ScrapeManager:
     # ---------- background thread ----------
     def _worker(self):
         from .scraper import scrape_players_async
+
         try:
             asyncio.run(
                 scrape_players_async(
@@ -280,6 +307,7 @@ class ScrapeManager:
                 "parts": self.part_counts,
                 "chunk_rows": CHUNK_ROWS,
             }
+
 
 # global singleton
 MANAGER = ScrapeManager()

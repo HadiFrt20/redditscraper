@@ -9,13 +9,14 @@ from .config import (
     REDDIT_USER_AGENT,
 )
 
+
 async def scrape_players_async(
     players: List[str],
-    subreddits: List[str],             # multiple subreddits
+    subreddits: List[str],  # multiple subreddits
     search_limit: Optional[int],
     time_filter: str,
     sort: str,
-    state_proxy,                       # ScrapeManager
+    state_proxy,  # ScrapeManager
 ) -> None:
     """
     Scrape submissions + comments for every (player, subreddit) pair and push rows via
@@ -30,7 +31,9 @@ async def scrape_players_async(
       - touch(), and fields current_player_index, message (optional)
     """
     if not (REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET and REDDIT_USER_AGENT):
-        raise RuntimeError("Missing Reddit credentials (REDDIT_CLIENT_ID/SECRET/USER_AGENT).")
+        raise RuntimeError(
+            "Missing Reddit credentials (REDDIT_CLIENT_ID/SECRET/USER_AGENT)."
+        )
 
     reddit = asyncpraw.Reddit(
         client_id=REDDIT_CLIENT_ID,
@@ -55,10 +58,7 @@ async def scrape_players_async(
                 subreddit = await reddit.subreddit(sub_name)
 
                 async for submission in subreddit.search(
-                    player,
-                    limit=search_limit,
-                    time_filter=time_filter,
-                    sort=sort
+                    player, limit=search_limit, time_filter=time_filter, sort=sort
                 ):
                     if state_proxy.wait_if_paused_or_cancelled():
                         return
@@ -69,7 +69,9 @@ async def scrape_players_async(
                     all_comments = submission.comments.list()
 
                     row: Dict[str, Any] = {
-                        "subreddit": getattr(submission.subreddit, "display_name", sub_name),  # will be ignored if not in CSV_FIELDS
+                        "subreddit": getattr(
+                            submission.subreddit, "display_name", sub_name
+                        ),  # will be ignored if not in CSV_FIELDS
                         "submission_id": submission.id,
                         "title": submission.title or "",
                         "submission_url": submission.url,
@@ -77,7 +79,9 @@ async def scrape_players_async(
                         "score": submission.score,
                         "upvote_ratio": getattr(submission, "upvote_ratio", None),
                         "num_comments": len(all_comments),
-                        "created_utc": datetime.utcfromtimestamp(submission.created_utc).isoformat(),
+                        "created_utc": datetime.utcfromtimestamp(
+                            submission.created_utc
+                        ).isoformat(),
                         "comments": [
                             getattr(c, "body", "")
                             for c in all_comments
