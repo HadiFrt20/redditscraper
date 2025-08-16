@@ -28,7 +28,7 @@ def start_scrape():
     # players (CSV fallback)
     players = data.get("players")
     if not players:
-        players = players_from_csv(PLAYERS_CSV_PATH)[1:3]
+        players = players_from_csv(PLAYERS_CSV_PATH)
 
     # subreddits: accept array or single string
     subs = data.get("subreddits")

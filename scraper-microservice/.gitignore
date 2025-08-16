@@ -1,0 +1,67 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.cache/
+coverage.xml
+
+# Type checkers / linters caches
+.mypy_cache/
+.pytype/
+.ruff_cache/
+.dmypy.json
+
+# Packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+MANIFEST
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE / editor
+.vscode/
+.idea/
+*.code-workspace
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Env & secrets (keep config.py in repo)
+.env
+.env.*
+*.env
+secrets/
+.python-version
+.tool-versions
+**/application_default_credentials.json
+**/*service-account*.json
+**/*credentials*.json
+**/*-sa*.json
+
+# Docker (local-only overrides)
+docker-compose.override.yml
+
+# Logs / temp
+*.log
+*.tmp
+tmp/
