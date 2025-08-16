@@ -1,6 +1,8 @@
 # app/routes.py
-import io
 from flask import Blueprint, jsonify, request, send_file, abort
+import io
+from .utils import players_from_csv
+from .manager import get_manager
 
 scrape_bp = Blueprint("scrape", __name__)
 
@@ -36,12 +38,11 @@ def home():
     </body>
     </html>
     """
-from .utils import players_from_csv
 
 PLAYERS_CSV_PATH = "./players_names.csv"
 DEFAULT_SUBREDDIT = "nbadiscussion"
 
-from .manager import get_manager
+
 
 # ---- Scrape controls ----
 @scrape_bp.post("/scrape")
