@@ -1,14 +1,15 @@
 # app/routes.py
 from flask import Blueprint, jsonify, request, send_file, abort
 import io
-from .utils import players_from_csv
 from .manager import get_manager
 
 scrape_bp = Blueprint("scrape", __name__)
 
+
 @scrape_bp.get("/_ah/health")
 def gae_health():
     return "ok", 200
+
 
 @scrape_bp.get("/_ah/start")
 def gae_start():
@@ -18,6 +19,7 @@ def gae_start():
 @scrape_bp.get("/health")
 def health():
     return jsonify({"status": "ok"})
+
 
 @scrape_bp.get("/")
 def home():
@@ -39,16 +41,16 @@ def home():
     </html>
     """
 
-PLAYERS_CSV_PATH = "./players_names.csv"
-DEFAULT_SUBREDDIT = "nbadiscussion"
-
-
 
 # ---- Scrape controls ----
 @scrape_bp.post("/scrape")
 def start_scrape():
+    from .utils import players_from_csv
+
     m = get_manager()
     data = request.get_json(silent=True) or {}
+    PLAYERS_CSV_PATH = "./players_names.csv"
+    DEFAULT_SUBREDDIT = "nbadiscussion"
 
     # players (CSV fallback)
     players = data.get("players")
@@ -77,19 +79,23 @@ def start_scrape():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+
 @scrape_bp.get("/scrape/progress")
 def scrape_progress():
     m = get_manager()
     with m.lock:
         pct = (m.completed_units / m.total_units * 100.0) if m.total_units else 0.0
-        return jsonify({
-            "status": m.status,
-            "message": m.message,
-            "total_units": m.total_units,
-            "completed_units": m.completed_units,
-            "percent": round(pct, 2),
-            "current_player_index": m.current_player_index,
-        })
+        return jsonify(
+            {
+                "status": m.status,
+                "message": m.message,
+                "total_units": m.total_units,
+                "completed_units": m.completed_units,
+                "percent": round(pct, 2),
+                "current_player_index": m.current_player_index,
+            }
+        )
+
 
 # ---------- GCS-backed results ----------
 @scrape_bp.get("/scrape/results")
@@ -102,21 +108,26 @@ def list_results():
 
     files = []
     for player, slug in info.get("slugs", {}).items():
-        files.append({
-            "player": player,
-            "slug": slug,
-            "final_blob": f"{job_prefix}{slug}.csv",
-            "parts": info.get("parts", {}).get(slug, 0),
-        })
+        files.append(
+            {
+                "player": player,
+                "slug": slug,
+                "final_blob": f"{job_prefix}{slug}.csv",
+                "parts": info.get("parts", {}).get(slug, 0),
+            }
+        )
 
-    return jsonify({
-        "status": info.get("status"),
-        "message": info.get("message"),
-        "job_id": info.get("job_id"),
-        "job_prefix": job_prefix,
-        "chunk_rows": info.get("chunk_rows"),
-        "files": files,
-    })
+    return jsonify(
+        {
+            "status": info.get("status"),
+            "message": info.get("message"),
+            "job_id": info.get("job_id"),
+            "job_prefix": job_prefix,
+            "chunk_rows": info.get("chunk_rows"),
+            "files": files,
+        }
+    )
+
 
 @scrape_bp.get("/scrape/results/<slug>.csv")
 def download_player_csv(slug: str):
@@ -146,6 +157,7 @@ def download_player_csv(slug: str):
         download_name=f"{slug}.csv",
     )
 
+
 @scrape_bp.get("/scrape/results/<slug>.url")
 def signed_url_for_player_csv(slug: str):
     from google.cloud import storage
@@ -168,6 +180,7 @@ def signed_url_for_player_csv(slug: str):
     url = blob.generate_signed_url(version="v4", expiration=3600, method="GET")
     return jsonify({"url": url})
 
+
 # --- controls: pause / resume / cancel ---
 @scrape_bp.post("/scrape/pause")
 def scrape_pause():
@@ -178,6 +191,7 @@ def scrape_pause():
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
+
 @scrape_bp.post("/scrape/resume")
 def scrape_resume():
     m = get_manager()
@@ -187,11 +201,15 @@ def scrape_resume():
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
+
 @scrape_bp.post("/scrape/cancel")
 def scrape_cancel():
     m = get_manager()
     try:
         m.cancel()
-        return jsonify({"status": "cancelling", "message": "Cancellation requested"}), 200
+        return (
+            jsonify({"status": "cancelling", "message": "Cancellation requested"}),
+            200,
+        )
     except Exception as e:
         return jsonify({"error": str(e)}), 400
