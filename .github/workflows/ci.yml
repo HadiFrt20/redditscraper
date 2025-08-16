@@ -82,6 +82,19 @@ jobs:
           automatic_scaling:
             min_instances: 0
             max_instances: 1
+          readiness_check:
+            path: "/_ah/health"
+            check_interval_sec: 10
+            timeout_sec: 4
+            failure_threshold: 3
+            success_threshold: 2
+            app_start_timeout_sec: 900
+
+          liveness_check:
+            path: "/_ah/health"
+            check_interval_sec: 30
+            timeout_sec: 4
+            failure_threshold: 5
           env_variables:
             REDDIT_CLIENT_ID: "${{ secrets.REDDIT_CLIENT_ID }}"
             REDDIT_CLIENT_SECRET: "${{ secrets.REDDIT_CLIENT_SECRET }}"
