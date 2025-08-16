@@ -1,8 +1,9 @@
 # app/routes.py
 import io
 from flask import Blueprint, jsonify, request, send_file, abort
-from google.cloud import storage  # NEW: use GCS
-from .manager import MANAGER
+from google.cloud import storage
+
+from .manager import get_manager
 from .utils import players_from_csv
 
 PLAYERS_CSV_PATH = "./players_names.csv"
@@ -18,11 +19,13 @@ def health():
 
 @scrape_bp.get("/")
 def home():
-    return f"status: {MANAGER.status}\n message: {MANAGER.message}"
+    m = get_manager()
+    return f"status: {m.status}\n message: {m.message}"
 
 
 @scrape_bp.post("/scrape")
 def start_scrape():
+    m = get_manager()
     data = request.get_json(silent=True) or {}
 
     # players (CSV fallback)
@@ -39,9 +42,9 @@ def start_scrape():
         subs = [subs]
 
     try:
-        MANAGER.start(
+        m.start(
             players=players,
-            subreddits=subs,  # <— CHANGED
+            subreddits=subs,
             search_limit=data.get("search_limit", None),
             time_filter=data.get("time_filter", "all"),
             sort=data.get("sort", "new"),
@@ -55,20 +58,17 @@ def start_scrape():
 
 @scrape_bp.get("/scrape/progress")
 def scrape_progress():
-    with MANAGER.lock:
-        pct = (
-            (MANAGER.completed_units / MANAGER.total_units * 100.0)
-            if MANAGER.total_units
-            else 0.0
-        )
+    m = get_manager()
+    with m.lock:
+        pct = (m.completed_units / m.total_units * 100.0) if m.total_units else 0.0
         return jsonify(
             {
-                "status": MANAGER.status,
-                "message": MANAGER.message,
-                "total_units": MANAGER.total_units,
-                "completed_units": MANAGER.completed_units,
+                "status": m.status,
+                "message": m.message,
+                "total_units": m.total_units,
+                "completed_units": m.completed_units,
                 "percent": round(pct, 2),
-                "current_player_index": MANAGER.current_player_index,
+                "current_player_index": m.current_player_index,
             }
         )
 
@@ -83,10 +83,11 @@ def list_results():
     Returns: status, job_id, job_prefix, and one entry per player:
       { player, slug, final_blob, parts }
     """
-    info = MANAGER.current_job_info()
+    m = get_manager()
+    info = m.current_job_info()
     job_prefix = info.get("job_prefix")
     if not job_prefix:
-        return jsonify({"status": MANAGER.status, "files": []})
+        return jsonify({"status": info.get("status"), "files": []})
 
     files = []
     for player, slug in info.get("slugs", {}).items():
@@ -117,20 +118,18 @@ def download_player_csv(slug: str):
     Compose header+parts into the final player CSV if needed,
     then stream the object bytes back to the client.
     """
-    info = MANAGER.current_job_info()
+    m = get_manager()
+    info = m.current_job_info()
     job_prefix = info.get("job_prefix")
     if not job_prefix:
         abort(404, "No current job")
 
     # Compose the final CSV if it doesn't exist yet
-    final_blob_name = MANAGER.compose_final_if_needed(slug)
+    final_blob_name = m.compose_final_if_needed(slug)
 
     # Stream from GCS (for very large files, consider the signed-URL endpoint below)
     client = storage.Client()
-    # Use the same bucket name your manager uses (it stores it in its config)
-    from .config import (
-        GCP_BUCKET,
-    )  # import here to avoid circular imports at module load
+    from .config import GCP_BUCKET  # avoid circular import at module load
 
     bucket = client.bucket(GCP_BUCKET)
     blob = bucket.blob(final_blob_name)
@@ -149,12 +148,13 @@ def download_player_csv(slug: str):
 # Optional: return a time-limited signed URL instead of streaming through Flask
 @scrape_bp.get("/scrape/results/<slug>.url")
 def signed_url_for_player_csv(slug: str):
-    info = MANAGER.current_job_info()
+    m = get_manager()
+    info = m.current_job_info()
     job_prefix = info.get("job_prefix")
     if not job_prefix:
         abort(404, "No current job")
 
-    final_blob_name = MANAGER.compose_final_if_needed(slug)
+    final_blob_name = m.compose_final_if_needed(slug)
 
     client = storage.Client()
     from .config import GCP_BUCKET
@@ -173,54 +173,32 @@ def signed_url_for_player_csv(slug: str):
 
 @scrape_bp.post("/scrape/pause")
 def scrape_pause():
+    m = get_manager()
     try:
-        MANAGER.pause()
-        return (
-            jsonify(
-                {
-                    "status": "paused",
-                    "message": "Job paused",
-                }
-            ),
-            200,
-        )
+        m.pause()
+        return jsonify({"status": "paused", "message": "Job paused"}), 200
     except Exception as e:
-        # e.g., "Job is not running."
         return jsonify({"error": str(e)}), 400
 
 
 @scrape_bp.post("/scrape/resume")
 def scrape_resume():
+    m = get_manager()
     try:
-        MANAGER.resume()
-        return (
-            jsonify(
-                {
-                    "status": "running",
-                    "message": "Job resumed",
-                }
-            ),
-            200,
-        )
+        m.resume()
+        return jsonify({"status": "running", "message": "Job resumed"}), 200
     except Exception as e:
-        # e.g., "Job is not paused."
         return jsonify({"error": str(e)}), 400
 
 
 @scrape_bp.post("/scrape/cancel")
 def scrape_cancel():
+    m = get_manager()
     try:
-        MANAGER.cancel()
-        # Manager sets status to "cancelling" immediately; background loop exits on next check
+        m.cancel()
         return (
-            jsonify(
-                {
-                    "status": "cancelling",
-                    "message": "Cancellation requested",
-                }
-            ),
+            jsonify({"status": "cancelling", "message": "Cancellation requested"}),
             200,
         )
     except Exception as e:
-        # e.g., "No running job to cancel."
         return jsonify({"error": str(e)}), 400

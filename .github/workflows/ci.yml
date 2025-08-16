@@ -78,7 +78,7 @@ jobs:
         run: |
           cat > app.yaml << 'EOF'
           runtime: python312
-          entrypoint: gunicorn -b :$PORT wsgi:app
+          entrypoint: gunicorn -w 1 -k gthread -b :$PORT wsgi:app
           env_variables:
             REDDIT_CLIENT_ID: "${{ secrets.REDDIT_CLIENT_ID }}"
             REDDIT_CLIENT_SECRET: "${{ secrets.REDDIT_CLIENT_SECRET }}"

@@ -1,3 +1,6 @@
+from app.manager import get_manager
+
+
 def test_health_ok(client):
     resp = client.get("/health")
     assert resp.status_code == 200
@@ -45,10 +48,9 @@ def test_start_scrape_accepts_single_subreddit_string(client, fake_scraper):
 
 
 def test_start_scrape_busy_returns_409(client, fake_scraper, monkeypatch):
-    from app.manager import MANAGER
-
-    with MANAGER.lock:
-        MANAGER.status = "running"
+    m = get_manager()
+    with m.lock:
+        m.status = "running"
 
     try:
         r = client.post("/scrape", json={"players": ["X"], "subreddits": ["nba"]})
@@ -56,9 +58,9 @@ def test_start_scrape_busy_returns_409(client, fake_scraper, monkeypatch):
         body = r.get_json()
         assert body["status"] == "busy"
     finally:
-        with MANAGER.lock:
-            MANAGER.status = "idle"
-            MANAGER.message = ""
+        with m.lock:
+            m.status = "idle"
+            m.message = ""
 
 
 def test_scrape_progress_shape(client):

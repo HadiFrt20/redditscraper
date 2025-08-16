@@ -59,8 +59,11 @@ class ScrapeManager:
         self.time_filter = "year"
         self.sort = "new"
 
-        # GCS context
-        self.bkt = gcs_bucket(GCP_BUCKET)
+        # GCS context — LAZY (don’t touch GCS on import)
+        self.bkt_name = GCP_BUCKET
+        self.bkt = None  # will be created on first use
+
+        # job info
         self.job_id: Optional[str] = None  # e.g. job-2025-08-14T12-34-56
         self.job_prefix: Optional[str] = None  # e.g. scrapes/job-.../
         self.slug_map: Dict[str, str] = {}  # player -> slug
@@ -68,6 +71,17 @@ class ScrapeManager:
         # per-player streaming buffers & part counts
         self.buffers: Dict[str, List[Dict[str, Any]]] = {}  # slug -> rows pending
         self.part_counts: Dict[str, int] = {}  # slug -> parts written
+
+    # ---------- internals ----------
+    def _ensure_bucket(self):
+        if self.bkt is None:
+            self.bkt = gcs_bucket(self.bkt_name)
+
+    def is_running(self) -> bool:
+        return self.status in ("running", "paused", "cancelling")
+
+    def touch(self):
+        self.updated_at = time.time()
 
     # ---------- lifecycle ----------
     def start(
@@ -128,6 +142,9 @@ class ScrapeManager:
                 self.buffers[slug] = []
                 self.part_counts[slug] = 0
 
+            # we’re about to write headers to GCS
+            self._ensure_bucket()
+
             # write a header object per player (once)
             header_line = ",".join(CSV_FIELDS) + "\n"
             for slug in used:
@@ -140,12 +157,6 @@ class ScrapeManager:
                 target=self._worker, name="scraper-worker", daemon=True
             )
             self.thread.start()
-
-    def is_running(self) -> bool:
-        return self.status in ("running", "paused", "cancelling")
-
-    def touch(self):
-        self.updated_at = time.time()
 
     # ---------- used by scraper ----------
     def set_total(self, n: int):
@@ -183,6 +194,7 @@ class ScrapeManager:
         sio.close()
 
         # write to GCS as next part
+        self._ensure_bucket()
         self.part_counts[slug] += 1
         part_no = self.part_counts[slug]
         blob_name = f"{self.job_prefix}{slug}/part-{part_no:05d}.csv"
@@ -197,6 +209,7 @@ class ScrapeManager:
         Compose header+parts into the final CSV object if it doesn't exist yet.
         Returns final blob name (e.g. scrapes/job-.../lebron-james.csv).
         """
+        self._ensure_bucket()
         final_blob = f"{self.job_prefix}{slug}.csv"
         if gcs_exists(self.bkt, final_blob):
             return final_blob
@@ -309,5 +322,11 @@ class ScrapeManager:
             }
 
 
-# global singleton
-MANAGER = ScrapeManager()
+_MANAGER: Optional[ScrapeManager] = None
+
+
+def get_manager() -> ScrapeManager:
+    global _MANAGER
+    if _MANAGER is None:
+        _MANAGER = ScrapeManager()
+    return _MANAGER
