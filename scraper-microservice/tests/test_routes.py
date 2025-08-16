@@ -11,8 +11,8 @@ def test_home_status_message(client):
     resp = client.get("/")
     assert resp.status_code == 200
     text = resp.get_data(as_text=True)
-    assert "status:" in text
-    assert "message:" in text
+    assert "NBA Scraper Service" in text
+    assert "Service is running" in text
 
 
 def test_start_scrape_with_subs_array_finishes(client, fake_scraper):

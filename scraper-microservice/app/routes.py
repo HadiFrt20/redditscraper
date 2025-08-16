@@ -25,7 +25,23 @@ def health():
 
 @scrape_bp.get("/")
 def home():
-    return "welcome home"
+    return """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <title>NBA Scraper</title>
+        <style>
+            body { font-family: sans-serif; margin: 2em; background: #f9f9f9; }
+            h1 { color: #0055a5; }
+        </style>
+    </head>
+    <body>
+        <h1>🏀 NBA Scraper Service</h1>
+        <p>Service is running. Try <code>/health</code> or <code>/scrape</code>.</p>
+    </body>
+    </html>
+    """
 
 # ---- Scrape controls ----
 @scrape_bp.post("/scrape")
