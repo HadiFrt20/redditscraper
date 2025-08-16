@@ -79,6 +79,9 @@ jobs:
           cat > app.yaml << 'EOF'
           runtime: python312
           entrypoint: gunicorn -w 1 -k gthread -b :$PORT wsgi:app
+          automatic_scaling:
+            min_instances: 0
+            max_instances: 1
           env_variables:
             REDDIT_CLIENT_ID: "${{ secrets.REDDIT_CLIENT_ID }}"
             REDDIT_CLIENT_SECRET: "${{ secrets.REDDIT_CLIENT_SECRET }}"
