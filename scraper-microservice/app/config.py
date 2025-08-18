@@ -14,3 +14,5 @@ RATELIMIT_SECONDS = 600  # 10 minutes
 MAX_RETRIES = 6
 # Upper bound for our own sleeps in case headers/messages are missing.
 MAX_BACKOFF_SECONDS = 600  # 10 minutes
+# Where we save checkpoints in GCS
+CHECKPOINT_PREFIX = "checkpointing"

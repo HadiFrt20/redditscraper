@@ -7,7 +7,7 @@ import threading
 import asyncio
 from typing import List, Dict, Any, Optional
 
-from .config import GCP_BUCKET, RESULTS_PREFIX, CHUNK_ROWS
+from .config import GCP_BUCKET, RESULTS_PREFIX, CHUNK_ROWS, CHECKPOINT_PREFIX
 from .utils import slugify
 from .gcs_io import (
     bucket as gcs_bucket,
@@ -16,9 +16,6 @@ from .gcs_io import (
     compose_many,
     download_text,
 )
-
-# Where we save checkpoints in GCS
-CHECKPOINT_PREFIX = "checkpointing"
 
 # CSV schema (one row per submission)
 CSV_FIELDS = [
@@ -495,6 +492,45 @@ class ScrapeManager:
                 "chunk_rows": CHUNK_ROWS,
                 "resume_cursor": self.resume_cursor,
             }
+
+    def _flush_all_buffers(self):
+        """Flush any per-player buffered rows to part files."""
+        try:
+            for slug in list(self.buffers.keys()):
+                self._flush_chunk(slug)
+        except Exception:
+            # Never let flushing crash shutdown
+            pass
+
+    def graceful_shutdown(self, timeout: float = 8.0):
+        """
+        Best-effort shutdown:
+        - mark cancelling, update message
+        - flush any pending CSV buffers
+        - save a checkpoint
+        - briefly join the worker thread
+        """
+        t = self.thread
+        with self.lock:
+            # Set cancelling state
+            self._cancel = True
+            self.status = "cancelling"
+            self.message = "Shutting down..."
+            self.touch()
+            # Flush any row buffers so nothing is lost
+            self._flush_all_buffers()
+            # Persist state
+            self._save_checkpoint()
+
+        if t and t.is_alive():
+            try:
+                t.join(timeout=timeout)
+            except Exception:
+                pass
+
+        # Final snapshot
+        with self.lock:
+            self._save_checkpoint()
 
 
 # Singleton factory (lazy to avoid work at import time)
