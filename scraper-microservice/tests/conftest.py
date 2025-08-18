@@ -1,10 +1,12 @@
 # tests/conftest.py
+import time
 import pytest
 
 # Import your package and factory
 import app as app_pkg
 from app import create_app
 import app.scraper as scraper_mod
+from app.manager import get_manager
 
 
 # --------------------------
@@ -23,6 +25,9 @@ class InMemoryGCS:
     def upload_text(self, bkt, blob_name: str, text: str):
         # store exact text
         self.store[blob_name] = text
+
+    def download_text(self, bkt, blob_name: str) -> str:
+        return self.store.get(blob_name, "")
 
     def exists(self, bkt, blob_name: str) -> bool:
         return blob_name in self.store
@@ -48,11 +53,16 @@ def fake_gcs(monkeypatch):
     gcs = InMemoryGCS()
 
     # Patch the *symbols imported into app.manager*
-    # manager did: `from .gcs_io import bucket as gcs_bucket, upload_text, exists as gcs_exists, compose_many`
+    # manager did:
+    #   from .gcs_io import bucket as gcs_bucket, upload_text,
+    #                      exists as gcs_exists, compose_many, download_text
     monkeypatch.setattr(app_pkg.manager, "gcs_bucket", gcs.bucket, raising=True)
     monkeypatch.setattr(app_pkg.manager, "upload_text", gcs.upload_text, raising=True)
     monkeypatch.setattr(app_pkg.manager, "gcs_exists", gcs.exists, raising=True)
     monkeypatch.setattr(app_pkg.manager, "compose_many", gcs.compose_many, raising=True)
+    monkeypatch.setattr(
+        app_pkg.manager, "download_text", gcs.download_text, raising=True
+    )
 
     # Some routes may import `signed_url` as `gcs_signed_url`
     # If present, patch it too (don't fail if not there).
@@ -98,7 +108,14 @@ def fake_scraper(monkeypatch):
     """
 
     async def _fake_scrape(
-        players, subreddits, search_limit, time_filter, sort, state_proxy
+        players,
+        subreddits,
+        search_limit,
+        time_filter,
+        sort,
+        state_proxy,
+        resume_cursor=None,  # accept new arg used by manager
+        **kwargs,  # future-proof against more args
     ):
         total = len(players) * len(subreddits)
         state_proxy.set_total(total)
@@ -139,9 +156,7 @@ def app(fake_gcs, fast_chunks, players_csv):
     Build a testing app. You can add any extra config overrides here.
     """
     flask_app = create_app()
-    flask_app.config.update(
-        TESTING=True,
-    )
+    flask_app.config.update(TESTING=True)
     return flask_app
 
 
@@ -153,3 +168,22 @@ def client(app):
 @pytest.fixture()
 def runner(app):
     return app.test_cli_runner()
+
+
+@pytest.fixture(autouse=True)
+def _stop_worker_after_test(fake_gcs):
+    """
+    Ensure the background worker is stopped after each test so patched GCS
+    functions remain in place until the thread exits.
+    """
+    yield
+    m = get_manager()
+    if getattr(m, "thread", None) and m.thread.is_alive():
+        try:
+            m.cancel()
+        except Exception:
+            pass
+        # wait briefly for the thread to exit
+        deadline = time.time() + 2.0
+        while m.thread.is_alive() and time.time() < deadline:
+            time.sleep(0.05)

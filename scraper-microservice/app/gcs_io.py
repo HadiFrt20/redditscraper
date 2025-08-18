@@ -21,6 +21,11 @@ def upload_text(
     bkt.blob(blob_name).upload_from_string(text, content_type=content_type)
 
 
+def download_text(bkt: storage.Bucket, blob_name: str) -> str:
+    """Download a blob as UTF-8 text."""
+    return bkt.blob(blob_name).download_as_text()
+
+
 def exists(bkt: storage.Bucket, blob_name: str) -> bool:
     return bkt.blob(blob_name).exists()
 

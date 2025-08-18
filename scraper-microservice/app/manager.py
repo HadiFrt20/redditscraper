@@ -14,7 +14,11 @@ from .gcs_io import (
     upload_text,
     exists as gcs_exists,
     compose_many,
+    download_text,
 )
+
+# Where we save checkpoints in GCS
+CHECKPOINT_PREFIX = "checkpointing"
 
 # CSV schema (one row per submission)
 CSV_FIELDS = [
@@ -37,6 +41,12 @@ def _now_job_id() -> str:
 
 
 class ScrapeManager:
+    """
+    Manages a single scrape job (players × subreddits), streams per-player CSV
+    files to GCS as parts, and writes crash-safe checkpoints to GCS so work
+    can be resumed after restarts.
+    """
+
     def __init__(self):
         self.lock = threading.RLock()
         self.thread: Optional[threading.Thread] = None
@@ -59,20 +69,24 @@ class ScrapeManager:
         self.time_filter = "year"
         self.sort = "new"
 
-        # GCS context — LAZY (don’t touch GCS on import)
+        # GCS context — lazy (don’t touch GCS on import)
         self.bkt_name = GCP_BUCKET
-        self.bkt = None  # will be created on first use
+        self.bkt = None  # created on first use
 
         # job info
-        self.job_id: Optional[str] = None  # e.g. job-2025-08-14T12-34-56
-        self.job_prefix: Optional[str] = None  # e.g. scrapes/job-.../
+        self.job_id: Optional[str] = None  # e.g. job-YYYY-MM-DDTHH-MM-SS
+        self.job_prefix: Optional[str] = None  # e.g. reddit_scrapes/job-.../
         self.slug_map: Dict[str, str] = {}  # player -> slug
 
         # per-player streaming buffers & part counts
-        self.buffers: Dict[str, List[Dict[str, Any]]] = {}  # slug -> rows pending
+        self.buffers: Dict[str, List[Dict[str, Any]]] = {}  # slug -> pending rows
         self.part_counts: Dict[str, int] = {}  # slug -> parts written
 
-    # ---------- internals ----------
+        # resume cursor (optional; used when recovering)
+        # meaning: resume at players[player_index], starting at subreddit_index
+        self.resume_cursor: Optional[Dict[str, int]] = None
+
+    # ---------- utils ----------
     def _ensure_bucket(self):
         if self.bkt is None:
             self.bkt = gcs_bucket(self.bkt_name)
@@ -83,6 +97,82 @@ class ScrapeManager:
     def touch(self):
         self.updated_at = time.time()
 
+    def _checkpoint_blob(self, job_id: Optional[str] = None) -> str:
+        jid = job_id or self.job_id or "unknown"
+        return f"{CHECKPOINT_PREFIX}/{jid}.json"
+
+    def _latest_checkpoint_blob(self) -> str:
+        return f"{CHECKPOINT_PREFIX}/latest.json"
+
+    def _save_checkpoint(self):
+        """Persist current job state to GCS (cheap JSON)."""
+        if not self.job_id:
+            return
+        self._ensure_bucket()
+        doc = {
+            "job_id": self.job_id,
+            "job_prefix": self.job_prefix,
+            "status": self.status,
+            "message": self.message,
+            "players": self.players,
+            "subreddits": self.subreddits,
+            "search_limit": self.search_limit,
+            "time_filter": self.time_filter,
+            "sort": self.sort,
+            "total_units": self.total_units,
+            "completed_units": self.completed_units,
+            "current_player_index": self.current_player_index,
+            "slug_map": self.slug_map,
+            "part_counts": self.part_counts,
+            "updated_at": self.updated_at,
+            "resume_cursor": self.resume_cursor,
+        }
+        payload = json.dumps(doc, ensure_ascii=False)
+        upload_text(self.bkt, self._checkpoint_blob(), payload)
+        # also update a "latest" pointer for convenience
+        upload_text(self.bkt, self._latest_checkpoint_blob(), payload)
+
+    def _load_checkpoint(self, job_id: str) -> Optional[Dict[str, Any]]:
+        """Load a checkpoint JSON by job_id from GCS."""
+        self._ensure_bucket()
+        blob = self._checkpoint_blob(job_id)
+        if not gcs_exists(self.bkt, blob):
+            return None
+        try:
+            text = download_text(self.bkt, blob)
+            return json.loads(text)
+        except Exception:
+            return None
+
+    def _restore_from_checkpoint(self, doc: Dict[str, Any]):
+        """Restore in-memory state (does not start a worker)."""
+        self.status = "running"
+        self.message = "Resuming from checkpoint"
+        self._cancel = False
+
+        self.players = list(doc.get("players", []))
+        self.subreddits = list(doc.get("subreddits", []))
+        self.search_limit = doc.get("search_limit")
+        self.time_filter = doc.get("time_filter", "year")
+        self.sort = doc.get("sort", "new")
+
+        self.total_units = int(doc.get("total_units", 0))
+        self.completed_units = int(doc.get("completed_units", 0))
+        self.current_player_index = int(doc.get("current_player_index", 0))
+        self.updated_at = time.time()
+
+        self.job_id = doc.get("job_id")
+        self.job_prefix = doc.get("job_prefix")
+        self.slug_map = dict(doc.get("slug_map", {}))
+        self.part_counts = {
+            k: int(v) for k, v in dict(doc.get("part_counts", {})).items()
+        }
+        self.buffers = {slug: [] for slug in self.slug_map.values()}
+        self.resume_cursor = doc.get("resume_cursor") or {
+            "player_index": self.current_player_index,
+            "subreddit_index": 0,
+        }
+
     # ---------- lifecycle ----------
     def start(
         self,
@@ -91,11 +181,31 @@ class ScrapeManager:
         search_limit: Optional[int],
         time_filter: str,
         sort: str,
+        *,
+        resume_job_id: Optional[str] = None,
     ):
+        """
+        Start a new job, or if resume_job_id is provided and found, resume it.
+        """
         with self.lock:
             if self.is_running():
                 raise RuntimeError("A job is already running.")
 
+            # RESUME path
+            if resume_job_id:
+                doc = self._load_checkpoint(resume_job_id)
+                if doc:
+                    self._restore_from_checkpoint(doc)
+                    # kick worker
+                    self.thread = threading.Thread(
+                        target=self._worker, name="scraper-worker", daemon=True
+                    )
+                    self.thread.start()
+                    # save a fresh checkpoint immediately (status changed)
+                    self._save_checkpoint()
+                    return
+
+            # NEW job path
             self.status = "running"
             self.message = "Scrape started"
             self._cancel = False
@@ -142,15 +252,17 @@ class ScrapeManager:
                 self.buffers[slug] = []
                 self.part_counts[slug] = 0
 
-            # we’re about to write headers to GCS
-            self._ensure_bucket()
-
             # write a header object per player (once)
+            self._ensure_bucket()
             header_line = ",".join(CSV_FIELDS) + "\n"
             for slug in used:
                 header_blob = f"{self.job_prefix}{slug}/header.csv"
                 if not gcs_exists(self.bkt, header_blob):
                     upload_text(self.bkt, header_blob, header_line)
+
+            # save initial checkpoint before doing work
+            self.resume_cursor = {"player_index": 0, "subreddit_index": 0}
+            self._save_checkpoint()
 
             # start background worker
             self.thread = threading.Thread(
@@ -163,6 +275,7 @@ class ScrapeManager:
         with self.lock:
             self.total_units = n
             self.touch()
+            self._save_checkpoint()
 
     def write_row(self, player: str, row: Dict[str, Any]):
         """
@@ -203,6 +316,7 @@ class ScrapeManager:
         # clear buffer
         self.buffers[slug] = []
         self.touch()
+        self._save_checkpoint()
 
     def compose_final_if_needed(self, slug: str) -> str:
         """
@@ -229,6 +343,7 @@ class ScrapeManager:
         compose_many(
             self.bkt, sources, final_blob, f"{self.job_prefix}{slug}/_compose_tmp"
         )
+        self._save_checkpoint()
         return final_blob
 
     def increment_progress(self):
@@ -236,6 +351,7 @@ class ScrapeManager:
             self.completed_units += 1
             self.message = f"Completed {self.completed_units}/{self.total_units}"
             self.touch()
+            self._save_checkpoint()
 
     def mark_finished(self):
         with self.lock:
@@ -243,6 +359,7 @@ class ScrapeManager:
                 self.status = "finished"
                 self.message = "Finished"
             self.touch()
+            self._save_checkpoint()
 
     def wait_if_paused_or_cancelled(self) -> bool:
         while True:
@@ -251,6 +368,7 @@ class ScrapeManager:
                     self.status = "cancelled"
                     self.message = "Cancelled"
                     self.touch()
+                    self._save_checkpoint()
                     return True
                 paused = self.status == "paused"
             if not paused:
@@ -259,24 +377,52 @@ class ScrapeManager:
 
     # ---------- background thread ----------
     def _worker(self):
+        """
+        Runs the async scraper in a private event loop. If the scraper supports
+        a 'resume_cursor' kwarg (recommended), we pass it to continue from a
+        specific (player_index, subreddit_index).
+        """
         from .scraper import scrape_players_async
 
         try:
-            asyncio.run(
-                scrape_players_async(
-                    players=self.players,
-                    subreddits=self.subreddits,
-                    search_limit=self.search_limit,
-                    time_filter=self.time_filter,
-                    sort=self.sort,
-                    state_proxy=self,
+            kwargs = {
+                # Optional resume support: scraper should accept **kwargs and
+                # start from these indices if provided.
+                "resume_cursor": self.resume_cursor,
+                # Optional: scraper can call back into us to update cursor
+                "update_resume_cursor": self.update_resume_cursor,
+            }
+            # Try with kwargs; if scraper doesn't accept them, fall back
+            try:
+                asyncio.run(
+                    scrape_players_async(
+                        players=self.players,
+                        subreddits=self.subreddits,
+                        search_limit=self.search_limit,
+                        time_filter=self.time_filter,
+                        sort=self.sort,
+                        state_proxy=self,
+                        **kwargs,
+                    )
                 )
-            )
+            except TypeError:
+                # Old scraper signature; run without resume features
+                asyncio.run(
+                    scrape_players_async(
+                        players=self.players,
+                        subreddits=self.subreddits,
+                        search_limit=self.search_limit,
+                        time_filter=self.time_filter,
+                        sort=self.sort,
+                        state_proxy=self,
+                    )
+                )
         except Exception as e:
             with self.lock:
                 self.status = "error"
                 self.message = f"Error: {e}"
                 self.touch()
+                self._save_checkpoint()
 
     # ---------- controls ----------
     def pause(self):
@@ -286,6 +432,7 @@ class ScrapeManager:
             self.status = "paused"
             self.message = "Paused"
             self.touch()
+            self._save_checkpoint()
 
     def resume(self):
         with self.lock:
@@ -294,6 +441,7 @@ class ScrapeManager:
             self.status = "running"
             self.message = "Resumed"
             self.touch()
+            self._save_checkpoint()
 
     def cancel(self):
         with self.lock:
@@ -303,6 +451,32 @@ class ScrapeManager:
             self.status = "cancelling"
             self.message = "Cancelling..."
             self.touch()
+            self._save_checkpoint()
+
+    # ---------- resume helpers ----------
+    def update_resume_cursor(self, player_index: int, subreddit_index: int):
+        """Allow scraper to report forward progress for resume."""
+        with self.lock:
+            self.resume_cursor = {
+                "player_index": int(player_index),
+                "subreddit_index": int(subreddit_index),
+            }
+            self._save_checkpoint()
+
+    def resume_from_checkpoint(self, job_id: str):
+        """Public: restore from a saved checkpoint and start the worker."""
+        with self.lock:
+            if self.is_running():
+                raise RuntimeError("A job is already running.")
+            doc = self._load_checkpoint(job_id)
+            if not doc:
+                raise RuntimeError(f"No checkpoint found for job_id '{job_id}'")
+            self._restore_from_checkpoint(doc)
+            self._save_checkpoint()
+            self.thread = threading.Thread(
+                target=self._worker, name="scraper-worker", daemon=True
+            )
+            self.thread.start()
 
     # ---------- info for routes ----------
     def current_job_info(self) -> Dict[str, Any]:
@@ -319,9 +493,11 @@ class ScrapeManager:
                 "slugs": self.slug_map,
                 "parts": self.part_counts,
                 "chunk_rows": CHUNK_ROWS,
+                "resume_cursor": self.resume_cursor,
             }
 
 
+# Singleton factory (lazy to avoid work at import time)
 _MANAGER: Optional[ScrapeManager] = None
 
 

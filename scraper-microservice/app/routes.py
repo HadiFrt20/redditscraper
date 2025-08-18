@@ -1,11 +1,13 @@
 # app/routes.py
 from flask import Blueprint, jsonify, request, send_file, abort
 import io
+
 from .manager import get_manager
 
 scrape_bp = Blueprint("scrape", __name__)
 
 
+# ---- App Engine readiness endpoints ----
 @scrape_bp.get("/_ah/health")
 def gae_health():
     return "ok", 200
@@ -13,9 +15,11 @@ def gae_health():
 
 @scrape_bp.get("/_ah/start")
 def gae_start():
+    # Called on instance start; keep it fast and side-effect free.
     return "", 204
 
 
+# ---- Basic health & home ----
 @scrape_bp.get("/health")
 def health():
     return jsonify({"status": "ok"})
@@ -32,11 +36,13 @@ def home():
         <style>
             body { font-family: sans-serif; margin: 2em; background: #f9f9f9; }
             h1 { color: #0055a5; }
+            code { background: #eee; padding: 2px 4px; border-radius: 4px; }
         </style>
     </head>
     <body>
         <h1>🏀 NBA Scraper Service</h1>
-        <p>Service is running. Try <code>/health</code> or <code>/scrape</code>.</p>
+        <p>Service is running. Try <code>/health</code>, <code>POST /scrape</code>,
+           or <code>GET /scrape/progress</code>.</p>
     </body>
     </html>
     """
@@ -45,22 +51,24 @@ def home():
 # ---- Scrape controls ----
 @scrape_bp.post("/scrape")
 def start_scrape():
+    # Local import keeps cold starts and readiness checks light.
     from .utils import players_from_csv
 
     m = get_manager()
     data = request.get_json(silent=True) or {}
-    PLAYERS_CSV_PATH = "./players_names.csv"
-    DEFAULT_SUBREDDIT = "nbadiscussion"
+
+    players_csv_path = "./players_names.csv"
+    default_subreddit = "nbadiscussion"
 
     # players (CSV fallback)
     players = data.get("players")
     if not players:
-        players = players_from_csv(PLAYERS_CSV_PATH)
+        players = players_from_csv(players_csv_path)
 
     # subreddits: accept array or single string
     subs = data.get("subreddits")
     if not subs:
-        one = data.get("subreddit", DEFAULT_SUBREDDIT)
+        one = data.get("subreddit", default_subreddit)
         subs = [one]
     elif isinstance(subs, str):
         subs = [subs]
@@ -72,6 +80,8 @@ def start_scrape():
             search_limit=data.get("search_limit", None),
             time_filter=data.get("time_filter", "all"),
             sort=data.get("sort", "new"),
+            # optional: resume if a job_id is provided
+            resume_job_id=data.get("resume_job_id"),
         )
         return jsonify({"status": "accepted", "message": "Job started"}), 202
     except RuntimeError as e:
@@ -97,7 +107,7 @@ def scrape_progress():
         )
 
 
-# ---------- GCS-backed results ----------
+# ---- GCS-backed results ----
 @scrape_bp.get("/scrape/results")
 def list_results():
     m = get_manager()
@@ -131,7 +141,7 @@ def list_results():
 
 @scrape_bp.get("/scrape/results/<slug>.csv")
 def download_player_csv(slug: str):
-    # Local import so cold starts / health don’t load heavy libs
+    # Heavy deps imported lazily to keep readiness snappy.
     from google.cloud import storage
     from .config import GCP_BUCKET
 
@@ -181,7 +191,7 @@ def signed_url_for_player_csv(slug: str):
     return jsonify({"url": url})
 
 
-# --- controls: pause / resume / cancel ---
+# ---- pause / resume / cancel ----
 @scrape_bp.post("/scrape/pause")
 def scrape_pause():
     m = get_manager()
@@ -213,3 +223,32 @@ def scrape_cancel():
         )
     except Exception as e:
         return jsonify({"error": str(e)}), 400
+
+
+@scrape_bp.post("/scrape/resume-checkpoint")
+def resume_from_checkpoint():
+    """Body: { "job_id": "job-YYYY-MM-DDTHH-MM-SS" }"""
+    m = get_manager()
+    data = request.get_json(silent=True) or {}
+    job_id = data.get("job_id")
+    if not job_id:
+        return jsonify({"error": "job_id is required"}), 400
+    try:
+        m.resume_from_checkpoint(job_id)
+        return jsonify({"status": "accepted", "message": f"Resuming {job_id}"}), 202
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@scrape_bp.get("/scrape/checkpoints")
+def list_checkpoints():
+    """List checkpoint files under checkpointing/ (names only)."""
+    from google.cloud import storage
+    from .config import GCP_BUCKET
+
+    client = storage.Client()
+    bucket = client.bucket(GCP_BUCKET)
+    prefix = "checkpointing/"
+    blobs = bucket.list_blobs(prefix=prefix)
+    names = [b.name[len(prefix) :] for b in blobs if b.name.endswith(".json")]
+    return jsonify({"checkpoints": names})

@@ -7,6 +7,18 @@ def test_health_ok(client):
     assert resp.json == {"status": "ok"}
 
 
+def test_gae_health_ok(client):
+    resp = client.get("/_ah/health")
+    assert resp.status_code == 200
+    assert resp.get_data(as_text=True).strip() == "ok"
+
+
+def test_gae_start_ok(client):
+    resp = client.get("/_ah/start")
+    assert resp.status_code == 204
+    assert resp.get_data() == b""
+
+
 def test_home_status_message(client):
     resp = client.get("/")
     assert resp.status_code == 200
@@ -143,3 +155,61 @@ def test_results_list_has_entries_after_start(client, fake_scraper):
     body = r.get_json()
     assert "job_id" in body and "job_prefix" in body
     assert isinstance(body["files"], list)
+
+
+def test_resume_checkpoint_missing_job_id_returns_400(client):
+    resp = client.post("/scrape/resume-checkpoint", json={})
+    assert resp.status_code == 400
+    body = resp.get_json()
+    assert "error" in body
+
+
+def test_checkpoints_list_empty(client, monkeypatch):
+    class _FakeBlob:
+        def __init__(self, name):
+            self.name = name
+
+    class _FakeBucket:
+        def list_blobs(self, prefix=None):
+            return []
+
+    class _FakeClient:
+        def bucket(self, name):
+            return _FakeBucket()
+
+    monkeypatch.setattr("google.cloud.storage.Client", lambda *a, **k: _FakeClient())
+
+    r = client.get("/scrape/checkpoints")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body == {"checkpoints": []}
+
+
+def test_checkpoints_list_has_items(client, monkeypatch):
+    class _FakeBlob:
+        def __init__(self, name):
+            self.name = name
+
+    class _FakeBucket:
+        def list_blobs(self, prefix=None):
+            return [
+                _FakeBlob("checkpointing/job-2025-08-16T13-31-41.json"),
+                _FakeBlob("checkpointing/job-2025-08-16T14-02-10.json"),
+                _FakeBlob("checkpointing/README.txt"),  # should be ignored
+            ]
+
+    class _FakeClient:
+        def bucket(self, name):
+            return _FakeBucket()
+
+    monkeypatch.setattr("google.cloud.storage.Client", lambda *a, **k: _FakeClient())
+
+    r = client.get("/scrape/checkpoints")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body == {
+        "checkpoints": [
+            "job-2025-08-16T13-31-41.json",
+            "job-2025-08-16T14-02-10.json",
+        ]
+    }
